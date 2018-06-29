@@ -240,4 +240,343 @@ int main() {
 原因前面也提到：unique_ptr不支持拷贝构造和赋值，必须使用“移动语义”。(3)将容器中的对象转移到其他对象，此时，
 容器中的对象已经不在拥有对象指针的控制权，控制权已经在obj2中了，在obj2的生命周期结束后会释放对象。
 
-这部分介绍有些涉及到C++11的部分特性，而且涉及的细节也很多，可能会有疏漏和错误，大家发现的时候请及时指出来。下期介绍shared_ptr。
+std::unique_ptr的最大特点是维持其在对象指针所有权的唯一性，即std::unique_ptr不允许通过copy-initialization或者operator =来进行对象指针
+所有权的复制，只能通过右值引用或者std::move来转移所有权到另外一个std::unique_ptr对象，如下面的代码所示。用C++ Concept的术语来说就是std::unique_ptr满足Move-Constructible和Move-Assignable，但是不满足Copy-Constructible和Copy-Assignable。
+
+```
+std::unique_ptr<Object> obj1 = new Object();
+std::unique_ptr<Object> obj2;
+obj2 = std::move(obj1); /// 通过move的方式进行对象指针的所有权转移；所有权转移后，obj1不再持有对象的指针
+obj2 = nullptr; /// 将空指针赋值给obj2，obj2释放对象所有权
+```
+
+
+但是有时候我们需要std::unique_ptr具有Copy-Constructible和Copy-Assignable的属性，例如：作为参数传递给其他的函数、在多个实体间共享对象指针等等，
+看下面一个例子：
+```
+/// 注意：这里是传值，不是左值引用或者右值引用
+unsigned int function(std::unique_ptr<Object> obj) {
+  ......
+}
+int main() {
+  std::unique_obj<Object> obj(new Object());
+  ......
+  unsigned int result = function(obj);  /// Compiler Error!!
+  ......
+}
+```
+
+ 
+这里只能通过引用的方式来进行参数传递，可以是左值引用也可以是右值引用。下面的例子是一个使用右值引用传递参数的正确写法：
+
+```
+unsigned int function(std::unique_ptr<Object>&& obj) {
+  ......
+}
+int main() {
+  std::unique_obj<Object> obj(new Object());
+  ......
+  unsigned int result = function(std::move(obj)); /// OK
+  ......
+}
+```
+
+## 4.shared_ptr的基本用法
+std::shared_ptr则是实现了所有权共享的智能指针对象，持有shared_ptr对象的代码片段都具有对其包装的对象指针的部分所有权，只有所有的持有者都释放了，
+其包装的对象指针才可以释放。std::shared_ptr内部是通过“引用计数”的方式来实现对于所有权的管理。使用std::shared_ptr，则上面的例子就可以修改为下面：
+
+```
+unsigned int function(std::shared_ptr<Object> obj) {
+  ......
+}
+int main() {
+  std::shared_ptr<Object> obj(new Object()); /// 创建一个shared_ptr对象，持有Object对象指针，引用计数为1
+  ......
+  /// 由于参数是通过传值方式，这里会产生一个shared_ptr的临时对象拷贝，
+  /// 在进入到function函数内部，shared_ptr对象对于Object对象指针的引用计数变为2
+  unsigned int result = function(obj); 
+  ......
+  /// 离开function作用域后，obj的对象指针引用计数减为1
+  /// 离开main函数作用域后, obj的对象指针引用计数减为0，此时删除Object对象
+  return 0;
+}
+```
+
+shared_ptr也有很多类型的构造函数形式，正确使用shared_ptr必须要了解这些构造函数的形式以及意图。shared_ptr的构造函数、拷贝构造函数以及operator = 
+的形式大约有20多种，这里只介绍几个常用的，剩余的大家可以自己看看。
+
+#### 4.1 shared_ptr的构造函数类型
+(1) template <typename T> 
+
+     shared_ptr<T>::shared_ptr() noexcept
+
+缺省的构造函数，如果创建shared_ptr对象时不指定参数，则创建一个指向空指针对象的shared_ptr对象。
+
+例如：shared_ptr<Object> obj; obj对象中持有的Object对象指针为空，引用计数初始值为0。
+
+因为shared_ptr重载了opeator bool，因此你可以使用下面的方式来判断一个shared_ptr是否是有效的：
+
+if (obj) { /// 即 obj.operator bool();
+
+   ......
+
+}
+
+(2) template <typename T>
+
+     template<typename _Tp1>
+
+     explicit shared_ptr<T>::shared_ptr(_Tp1* __p)
+
+接受一个对象指针来构造shared_ptr对象。注意，这里的构造函数是一个成员函数模板，表示构造函数参数的指针类型和内部持有的对象指针的类型可能是不同类型。这个使我们平时使用的最普遍的构造函数，有下面两种不同的用法：
+
+例1：std::shared_ptr<Object> obj(new Object);
+
+  使用创建出来的Object对象指针来构造shared_ptr对象，shared_ptr对象管理Object对象的生命周期。
+
+例2：class Document : public Object {};
+
+     std::shared_ptr<Object> obj(new Document);
+
+使用创建出来的Document对象指针来构造shared_ptr对象。因为Document派生自Object，即相当在shared_ptr内部持有的Object对象指针实际指向的是Document对象，也就是C++的多态的基本用法。
+
+该成员模板的第二个类型_TP1需要满足下面的约束，true == std::is_convertible<_TP1*, T*>::value; 才能使得构造函数成功，否则会有一个编译告警。这种约束在C++新标准中称为：Concept，以后再介绍。
+
+为了实现在编译期检查这类错误，实现上使用了一些模板的静态推导的技巧（std::enable_if），有兴趣的同学可以下面的一些参考文献。
+
+  
+
+另外，注意该构造函数是声明为explicit，即不允许进行隐式的copy-initialization，只能通过direct-initialization来进行构造。关于copy-initialization和direct-initialization的差别，在之前的专题中已经有过介绍（http://3ms.huawei.com/hi/group/2441/thread_3817511.html?mapId=2584409）。
+
+shared_ptr<Object> obj = new Object; 这种写法是无法编译通过的。
+
+(3) template <typename T>
+
+     template<typename _Tp1, typename _Deleter>
+
+     shared_ptr<T>::shared_ptr(_Tp1* __p, _Deleter __d)
+
+和上面的构造函数类似，只是运行用户指定自己的对象释放操作，这个在unique_ptr中也介绍过，如下面的例子中的示例代码：
+
+```
+class MyDeleter {
+public:
+  template<class T>
+  void operator() (T* ptr) {
+	std::cout << "MyDeleter" << std::endl;
+	free(ptr);
+  }
+};
+/// 这里通过placement new创建一个对象, 对应的对象删除操作需要将该内存释放
+void* buf = malloc(sizeof(Object));
+MyDeleter dtor;
+std::shared_ptr<Object> obj(new (buf) Object(), dtor);
+```
+
+
+(4) template <typename T>
+
+     shared_ptr<T>::shared_ptr(const shared_ptr&) noexcept = default;
+
+缺省的拷贝构造函数。default关键字是C++11中引入的，表示由编译器来为我们自动生成一个默认拷贝构造函数。用法如下面的例子：
+
+```
+std::shared_ptr<Object> obj(new Object);
+std::shared_ptr<Object> obj2(obj);
+assert(obj2.use_count() == 2);
+```
+
+
+(5) template<typename T>
+
+      template<typename _Tp1>
+
+      shared_ptr<T>::shared_ptr(const shared_ptr<_Tp1>& __r) noexcept
+
+持有不同类型对象指针的shared_ptr的拷贝构造函数。和(2)类似，这个成员函数模板的类型_TP1同样需要满足下面的约束，true == std::is_convertible<_TP1*, T*>::value。例如：_TP1是T的派生类。
+
+```
+class Document : public Object {};
+std::shared_ptr<Document> obj(new Document);
+std::shared_ptr<Object> obj2(obj);
+assert(obj2.use_count() == 2);
+```
+
+(6) template <typename T> 
+
+     template<typename _Tp1, typename _Del>
+
+     shared_ptr<T>::shared_ptr(std::unique_ptr<_Tp1, _Del>&& __r)
+
+使用unique_ptr来构造shared_ptr对象。这里特别要注意的是unique_ptr是不具有共享对象所有权的，所以构造函数的参数是右值引用，而不是值传递。使用方式如下：
+
+```
+class Document : public Object {};
+std::unique_ptr<Document> obj(new Document);
+std::shared_ptr<Object> obj2(std::move(obj));  /// 使用右值引用
+/// 经过std::move后，所有权转移到shared_ptr对象中，std::unique_ptr<Document> obj不再持有对象所有权
+assert(obj2.use_count() == 1);
+```
+
+#### 4.在STL容器中使用shared_ptr
+shared_Ptr对象满足"CopyConstructible"和"CopyAssignable"的要求，在STL容器中使用基本上和普通的指针一样使用，好处是不用开发人员再对容器中的指针逐个释放对象。
+
+```
+class ObjectManager {
+public:
+  ~ObjectManager() {
+	/// 这里vector会释放shared_ptr对象，进而释放掉Object对象。
+	/// 如果是std::vector<Object*>这种方式，开发人员需要在析构函数中手工遍历容器，然后逐个删除对象
+  }
+  
+  void addObject(unsigned int id) {
+	objects_.push_back(std::shared_ptr<Object>(new Object(id)));
+  }  
+private:
+  std::vector<std::shared_ptr<Object> > objects_;
+};
+```
+
+该例子中ObjectManager::addObject函数创建一个对象，并作为shared_ptr对象存储在vector容器中。这个写法会有一次额外的shared_ptr临时对象的创建和拷贝，对效率有影响。可以用下面两种方式来优化（都需要在C++11新标准下）：
+
+1) 使用移动语义，避免临时对象拷贝
+
+objects_.push_back(std::move(std::shared_ptr<Object>(new Object(id))));
+
+2) 使用vector的新的成员函数emplace_back，直接在vector对象尾部的空间上构建一个对象，避免临时对象的拷贝
+
+objects_.emplace_back(new Object(id));
+
+#### 4.3. shared_ptr的循环依赖和weak_ptr
+
+shared_ptr带来的自动内存管理并不是万能良药，使用不当还是会导致内存泄露的。一个典型的错误使用方式就是循环依赖，如下面的例子：
+
+```
+
+该例子中ObjectManager::addObject函数创建一个对象，并作为shared_ptr对象存储在vector容器中。这个写法会有一次额外的shared_ptr临时对象的创建和拷贝，对效率有影响。可以用下面两种方式来优化（都需要在C++11新标准下）：
+
+1) 使用移动语义，避免临时对象拷贝
+
+objects_.push_back(std::move(std::shared_ptr<Object>(new Object(id))));
+
+2) 使用vector的新的成员函数emplace_back，直接在vector对象尾部的空间上构建一个对象，避免临时对象的拷贝
+
+objects_.emplace_back(new Object(id));
+
+3. shared_ptr的循环依赖和weak_ptr
+
+shared_ptr带来的自动内存管理并不是万能良药，使用不当还是会导致内存泄露的。一个典型的错误使用方式就是循环依赖，如下面的例子：
+
+```
+class A;
+class B {
+private:
+  std::shared_ptr<A> refA_;
+};
+class A {
+private:
+  std::shared_ptr<B> refB_;
+};
+```
+
+该例子中，A对象和B对象的类成员中各自持有了一个包含对方对象指针的shared_ptr对象，在A对象和B对象进行析构的时候，发现引用计数的数值都不为0，
+导致无法正确的释放内存。
+
+大家不要觉得这个例子很牵强，在实际工程中出现这个的概率还蛮大的。典型的如观察者模式，实现中通常观察者都需要维护着观察对象的指针，
+而被观察对象则保存了所有来订阅状态变化的观察者的指针，以便在状态变化时，通过这些指针来触发观察者的动作。如果按照上面的实现，
+显然就容易犯这个循环依赖的错误。
+
+这也是为什么会有weak_ptr的引入，利用weak_ptr可以降上面的例子修改为下面的正确方式。
+
+```
+class A;
+class B {
+public:
+  void action();
+private:
+  std::shared_ptr<A> refA_;
+};
+class A {
+public:
+  void do_something();
+private:
+  std::weak_ptr<B> refB_;
+};
+```
+
+修改后，A对象的类成员中仅仅是持有了B对象指针的一个“弱引用”。你可以这么理解weak_ptr，weak_ptr不会增加对象指针所有权的引用计数，
+只是表明一种监视关系。通过weak_ptr，你可以观察到当前的对象是否还可用。
+
+使用时，先要做一次“权限提升”，然后才能操作其持有的对象。接上面的列子，使用方式如下：
+
+```
+void A::do_something() {
+  /// 检查其监视的这个对象是否还可用，即refB_持有的B对象引用计数大于0.
+  if (!refB_.expired()) {
+	/// 通过lock临时提升权限，真正持有该对象，然后对对象进行操作
+	std::shared_ptr<B> refB = refB_.lock();  
+	refB->action();
+  }
+}
+```
+
+通过这种方法，在A、B对象析构时，由于A::refB_并不真正持有B对象的所有权，因此能够解除循环依赖，使得析构函数能够被正确的执行。
+
+#### 4.4. shared_ptr和this指针
+
+先看下面一个例子：
+
+```
+void callback(std::shared_ptr<Object> obj) {
+  .......
+}
+class Object {
+public:
+  void f() {
+	/// 希望在这里调用call函数，但是改怎么将自身作为shared_ptr对象传递给callback函数呢？
+  }
+};
+```
+
+下面这种写法，直接通过this指针来构造一个shared_ptr，再将其自身作为参数传递给callback函数。
+
+void Object::f() {
+
+  callback(std::shared_ptr<Object>(this));
+
+}
+
+这个写法是错误的。Constructing a std::shared_ptr for an object that is already managed by another std::shared_ptr will not consult the internally stored weak reference and thus will lead to undefined behavior. 
+
+这里需要使用enable_shared_from_this用法。
+
+```
+/// 这是一个很有名的模式，(CRTP)Curiously Recurring Template Pattern. Object从enable_shared_from_this派生，而enable_shared_from_this又是使用Object来实例化的。
+class Object : public std::enable_shared_from_this<Object> {
+public:
+  void f() {
+	callback(shared_from_this());
+  }
+};
+```
+
+
+enable_shared_from_this通常的实现都是使用weak_ptr来保存一个对象指针的弱引用，而通过shared_from_this则利用weak_ptr来构造一个shared_ptr，通过传值方式返回。
+
+#### 4.5. shared_ptr的线程安全
+
+shared_ptr保证了对于引用计数的管理是线程安全的，实现上要么使用mutex做临界区保护要么通过lock-free的方式（原子指令+内存屏障）来保证引用计数的线程安全。
+
+但是对其持有对象的任何操作都不是线程安全的，这写线程安全是需要开发者自己保证的。
+
+shared_ptr智能指针背后的设计原理、实现以及使用涉及很多内容，本文只能算是一个简要介绍，对这个感兴趣的同学可以深入的读下面的一些文章。
+
+文章列表：
+
+[http://herbsutter.com/2013/05/29/gotw-89-solution-smart-pointers/](http://herbsutter.com/2013/05/29/gotw-89-solution-smart-pointers/)
+
+[http://herbsutter.com/2013/06/05/gotw-91-solution-smart-pointer-parameters/](http://herbsutter.com/2013/06/05/gotw-91-solution-smart-pointer-parameters/)
+
+[http://www.boost.org/doc/libs/1_55_0/libs/smart_ptr/shared_ptr.htm](http://www.boost.org/doc/libs/1_55_0/libs/smart_ptr/shared_ptr.htm)
+
+[http://gcc.gnu.org/onlinedocs/libstdc++/manual/memory.html](http://www.boost.org/doc/libs/1_55_0/libs/smart_ptr/shared_ptr.htm)
