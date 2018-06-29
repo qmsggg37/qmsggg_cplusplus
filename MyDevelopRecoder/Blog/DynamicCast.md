@@ -161,3 +161,131 @@ __dynamic_cast是一个外部函数，其定义和实现是属于C++ ABI的一�
 编译器在对dynamic_cast进行代码生成的时候，会生成一个对__dynamic_cast的调用，然后由链接器完成后面的链接。
 
 __dynamic_cast的函数原型如下，其实现和编译器内部实现相关。
+
+```
+extern "C" void *
+__dynamic_cast (const void *src_ptr,	// object started from
+				const __class_type_info *src_type, // type of the starting object
+				const __class_type_info *dst_type, // desired target type
+				ptrdiff_t src2dst) // how src and dst are related
+```
+
+## 4. dynamic_cast替代解决方案
+
+前面我们提到的一些在C++工程中使用dynamic_cast的问题，主要集中在两点：1）空间和时间的开销；2）某些C++项目禁止使用RTTI，会导致dynamic_cast无法使用。需要寻找类似的实现方案。
+
+很多大型的C++系统都会有自己的类型转化系统的实现，举两个例子：
+
+1）Visual C++中的MFC：MFC类库中的所有从CObject派生下来的类都有一个和其关联的CRuntimeClass，用于记录其类型信息，包括类的名字。MFC通过一系列的宏定义，很巧妙的把具有继承关系的类的CRuntimeClass形成一个链表，然后实现类似的类型转化。不过，MFC出现的年代很早，那时候的C++还不完善（可能连dynamic_cast都还没有，或者编译器支持还不完善），除了自己来实现类型系统外，也没什么别的方法。从现代的眼光来看，MFC中的类型系统的实现已经有些落后。
+
+2）CLANG/LLVM: CLANG是现代C/Obj-C/C++编译器前端的实现，其中类型系统的设计就非常高效，也是推荐大家来在一些项目中替代dynamic_cast的一个方案。下面介绍一下CLANG中的动态类型转化的设计。
+
+CLANG中使用的动态类型转化是在LLVM的基础支持库中提供的，包括：llvm::dyn_cast, llvm::is_a, llvm::dyn_cast_or_null。用起来和dynamic_cast很类似，如下面的例子。为了支持这种用法，需要在具有多态的类信息中额外增加一些处理，下面从dyn_cast实现的代码来说明。
+
+```
+int main() {
+  Base *b = new Derive();
+  Derive *d = dyn_cast<Derive>(b);
+  delete b;
+  return 0;
+}
+```
+
+因为llvm::dyn_cast同样也支持指针类型和引用类型的动态类型转化，限于篇幅，只分析一下指针类型的动态转化的实现。
+
+```
+template <class X, class Y>
+inline typename enable_if<
+  is_same<Y, typename simplify_type<Y>::SimpleType>,
+  typename cast_retty<X, Y*>::ret_type
+>::type dyn_cast(Y *Val) {
+  return isa<X>(Val) ? cast<X>(Val) : 0;
+}
+```
+
+
+这是一个函数模板，返回值类型为：typename enable_if<is_same<Y, typename simplify_type<Y>::SimpleType>, typename cast_retty<X, Y*>::ret_type>::type。这个返回值是根据Y的类型静态推导出来的，首先需要了解enable_if的用法。enable_if是一个基于Metafunction的模板类，
+简化的实现类似下面的代码：
+	
+```
+template<bool Cond, class T = void>
+struct enable_if {};
+ 
+template<class T>
+struct enable_if<true, T> { typedef T type; };
+```
+
+
+1) 如果Cond是true，则enable_if<...>::type就是第二个模板参数中的类型T；
+
+2) 如果Cond是false，则enable_if<...>中没有任何type定义，会有编译失败；
+
+simplify_type<Y>::SimpleType通过模板的特化来处理Y类型是经过const修饰的，去除const后的类型；cast_retty<X, Y*>::ret_type 
+	也是通过一系列的模板特化来处理Y是 const *, *const， const *const等多种const修饰类型。
+
+dyn_cast的实现比较简单，先通过isa<X>(Val)来判断是否有继承关系，如果是向下转化“Down-Casting”或者是向上转化“Up-Casting”，
+	则通过cast<X>(Val)进行转化，否则返回空指针。isa的实现也用了很多的模板特化来处理const修饰，我们只看下最关键的两个模板函数：
+```
+template <typename To, typename From, typename Enabler = void>
+struct isa_impl {
+  static inline bool doit(const From &Val) {
+	return To::classof(&Val);
+  }
+};
+
+template <typename To, typename From>
+struct isa_impl<To, From,
+				typename enable_if<
+				  llvm::is_base_of<To, From>
+				>::type
+			   > {
+  static inline bool doit(const From &) { return true; }
+```
+
+这段代码中包括两个模板函数，下面是上面的部分特化版本，这里使用了C++模板的一个技巧SFINAE(Substitution Fail Is Not An Error)。
+首先，模板的静态推导会尝试特化版本，通过enable_if<llvm::is_base_of<To, From> >::type来判断是否是一个向上转化“Up-Casting”，如果是（llvm::is_base_of<To, From>为true），则enable_if<...>::type是有定义的，且默认为void类型，则推导成功，直接返回true；如果不是llvm::is_base_of<To, From>为false），enable_if<...>::type是无定义的，则推导失败。这个时候编译器并不直接报错，而是模板实例化尝
+试使用上面的非特化版本，通过调用目标类的classof静态成员函数来判断是否具有继承关系。
+
+因此，LLVM的这种类型系统使用需要的用户在编写类的时候额外提供classof静态成员函数来判断是否具有继承关系，例子如下：
+```
+class Sharp {
+public:
+  Sharp(Kind k) : k_(k) {}
+  enum Kind {
+	CIRCLE = 0,
+  };
+  Kind getkind() const { return k_; }
+private:
+  Kind k_;
+};
+
+class Circle : public Base {
+public:
+  Circle() : Base(CIRCLE) {}
+  
+  static bool classof(const Base* b) {
+	return b->getkind() == CIRCLE;
+  }
+};
+
+Sharp* s = new Circle();
+Circle *c = dyn_cast<Circle>(s);
+```
+	
+
+基类中需要记录类型枚举，每个派生类在创建的时候指定该类型，通过保存的这个类型枚举在运行时判断是否具有继承关系。
+
+这种类型系统的优势有几个方面：
+
+1) 不依赖编译器实现：不需要依赖vtable中的typeinfo，即便禁用了RTTI，也不影响该机制；
+
+2) 效率高：空间上的开销是每个类对象大小多个4bytes，运行时只有一个简单的判断，getkind通常都会被inline优化；
+
+3) 编译期推断：向上转化“Up-Casting”在编译器就可以完成；而对于向下转化“Down-Casting”，如果开发者忘记在类中提供classof静态成员函数，
+则编译的时候就会报错，将出错的地方提前到编译期，这个是非常重要的。
+
+缺点：
+
+1) 大量的模板实例化和部分实例化带来一定的代码膨胀，不过由于这些函数模板都很小，实际上的膨胀也不严重；
+
+2) 一些模板部分实例化以及SFINAE用法在版本较老的GCC编译器上支持还不成熟，某些单板上没法用。
