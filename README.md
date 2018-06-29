@@ -5,7 +5,7 @@
 ## 第三方资源
 
 ## MY
-[C++开发之旅]()
+[C++开发之旅](https://github.com/qmsggg/qmsggg_cplusplus/tree/master/MyDevelopRecoder)
 
 ## 新闻 📃
 
