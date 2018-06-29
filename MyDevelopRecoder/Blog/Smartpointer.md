@@ -448,22 +448,6 @@ objects_.emplace_back(new Object(id));
 shared_ptr带来的自动内存管理并不是万能良药，使用不当还是会导致内存泄露的。一个典型的错误使用方式就是循环依赖，如下面的例子：
 
 ```
-
-该例子中ObjectManager::addObject函数创建一个对象，并作为shared_ptr对象存储在vector容器中。这个写法会有一次额外的shared_ptr临时对象的创建和拷贝，对效率有影响。可以用下面两种方式来优化（都需要在C++11新标准下）：
-
-1) 使用移动语义，避免临时对象拷贝
-
-objects_.push_back(std::move(std::shared_ptr<Object>(new Object(id))));
-
-2) 使用vector的新的成员函数emplace_back，直接在vector对象尾部的空间上构建一个对象，避免临时对象的拷贝
-
-objects_.emplace_back(new Object(id));
-
-3. shared_ptr的循环依赖和weak_ptr
-
-shared_ptr带来的自动内存管理并不是万能良药，使用不当还是会导致内存泄露的。一个典型的错误使用方式就是循环依赖，如下面的例子：
-
-```
 class A;
 class B {
 private:
