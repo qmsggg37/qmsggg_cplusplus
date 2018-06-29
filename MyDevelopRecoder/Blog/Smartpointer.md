@@ -190,8 +190,6 @@ int main() {
 
 #### 3.4 在STL容器中使用unique_ptr
 
- 
-
 如果在容器中管理原生的对象指针，那么需要在容器销毁时把容器中保存的对象指针也释放，否则就容易发生内存泄漏。
 如果在容器中保存智能指针对象不就可以解决这个问题了吗，容器销毁时会调用每个容器中对象的析构函数，进而删除对象指针。
 悲剧的是，在C++98标准中，auto_ptr是无法在STL容器中使用的。C++98标准规定了容器中的对象必须满足"CopyConstructible"和"CopyAssignable"两个约束，
@@ -344,9 +342,7 @@ if (obj) { /// 即 obj.operator bool();
 
 为了实现在编译期检查这类错误，实现上使用了一些模板的静态推导的技巧（std::enable_if），有兴趣的同学可以下面的一些参考文献。
 
-  
-
-另外，注意该构造函数是声明为explicit，即不允许进行隐式的copy-initialization，只能通过direct-initialization来进行构造。关于copy-initialization和direct-initialization的差别，在之前的专题中已经有过介绍（http://3ms.huawei.com/hi/group/2441/thread_3817511.html?mapId=2584409）。
+另外，注意该构造函数是声明为explicit，即不允许进行隐式的copy-initialization，只能通过direct-initialization来进行构造。关于copy-initialization和direct-initialization的差别.
 
 shared_ptr<Object> obj = new Object; 这种写法是无法编译通过的。
 
