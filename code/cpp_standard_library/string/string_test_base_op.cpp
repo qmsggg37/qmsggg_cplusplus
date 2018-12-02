@@ -46,7 +46,26 @@ int main(int argc, char** argv)
     s_replace.pop_back();
     cout << s_replace << endl;
     s_replace.reserve(20);
+    // s_replace.replace(0, string::npos, 'ee');
     s_replace.replace(0, string::npos, "ex");
     cout << s_replace << endl;
+
+    string s_replace_move = move(s_replace);
+    cout << s_replace_move << endl;
+    s_replace.replace(0, string::npos, "ee");
+    cout << s_replace_move << endl;
+
+    // string op;
+    // cin >> op;
+    // cout << op << endl;
+    const string quit("quit");
+    string str_cin;
+    while (getline(cin, str_cin, ':')) {
+        if (str_cin == quit) {
+            break;
+        }
+        cout << str_cin << endl;
+    }
+    str_cin.clear();
     return 0;
 }
