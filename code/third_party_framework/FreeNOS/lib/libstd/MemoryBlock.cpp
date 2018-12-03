@@ -12,3 +12,14 @@ void * MemoryBlock::set(void *dest, int ch, unsigned count)
     }
     return (dest);
 }
+
+Size MemoryBlock::copy(void *dest, const void *src, Size count)
+{
+    const char *sp = (const char *)src;
+    char *dp = (char *)dest;
+    for (Size i = count; i != 0; i--) 
+    {
+        *dp++ = *sp++;
+    }
+    return (count);
+}
